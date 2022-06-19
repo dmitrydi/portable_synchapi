@@ -136,7 +136,17 @@ struct Comms {
     std::condition_variable* cv;
     std::mutex* mtx;
     int* cntr;
-    Comms(std::condition_variable* _cv, std::mutex* _mtx, int* _cntr): cv(_cv), mtx(_mtx), cntr(_cntr) {}
+    std::vector<bool>* signalsContainer;
+    Comms(std::condition_variable* _cv, std::mutex* _mtx, int* _cntr, std::vector<bool>* _sig_cr):
+        cv(_cv),
+        mtx(_mtx),
+        cntr(_cntr),
+        signalsContainer(_sig_cr) {}
+};
+
+struct CommsWrapper {
+    std::weak_ptr<Comms> comms;
+    int idxToSignal;
 };
 
 class Event {
@@ -145,8 +155,8 @@ private:
    bool bIsSignaled;
    std::mutex appMutex;
    mutable std::mutex stateMutex;
-   std::vector<std::weak_ptr<Comms>> waiters;
-   std::vector<std::weak_ptr<Comms>> waitersAux;
+   std::vector<CommsWrapper> waiters;
+   std::vector<CommsWrapper> waitersAux;
 public:
     Event(bool bManualReset, bool bInitialState): bIsManualReset(bManualReset), bIsSignaled(bInitialState) {}
     bool set() {
@@ -161,17 +171,18 @@ public:
         if(!waiters.empty()) {
             waitersAux.reserve(waiters.size());
             for (auto& wt: waiters) {
-                auto swt = wt.lock();
+                auto swt = wt.comms.lock();
                 if (!swt)
                     continue;
                 std::lock_guard<std::mutex> wlk(*swt->mtx); // here we intentionally hold the waiter since it's not expired in previous line
                 ++(*swt->cntr);
+                (*swt->signalsContainer)[wt.idxToSignal] = true;
                 swt->cv->notify_one();
                 break;
             }
 
             for (auto& w: waiters) {
-                if(!w.expired())
+                if(!w.comms.expired())
                     waitersAux.push_back(w);
             }
             std::swap(waiters, waitersAux);
@@ -192,51 +203,58 @@ public:
     bool isManualReset() const {
         return bIsManualReset;
     }
-    void attachWaiter(std::weak_ptr<Comms> aWaiter) {
+    void attachWaiter(CommsWrapper aWaiter) {
         std::lock_guard<std::mutex> lk(appMutex);
         waiters.push_back(aWaiter);
     }
 };
 
-constexpr unsigned long WAIT_OK = 0L;
+constexpr unsigned long WAIT_OBJECT_0 = 0L;
 constexpr unsigned long WAIT_TIMEOUT = 258L;
 
-int WaitForMultipleObjects(std::vector<Event*>& vEvents, bool bWaitAll, unsigned long ulMilliseconds) {
+int WaitForMultipleObjects(std::vector<Event*> vEvents, bool bWaitAll, unsigned long ulMilliseconds) {
     int totalEvents = vEvents.size();
     int signaled = 0;
-    for (const auto ev: vEvents) {
-        if (ev) {
-            if (ev->isSignaled())
-                ++signaled;
+    for (int i = 0; i != totalEvents; i++) {
+        if (vEvents[i] && vEvents[i]->isSignaled()) {
+            ++signaled;
         }
         if(!bWaitAll && signaled)
-            return WAIT_OK;
+            return WAIT_OBJECT_0 + i;
     }
     if (signaled == totalEvents)
-        return WAIT_OK;
+        return WAIT_OBJECT_0;
     std::mutex mtx;
     std::condition_variable cv;
     bool ret = false;
+    std::vector<bool> signals(totalEvents, false);
     {
-        std::shared_ptr<Comms> comms = std::make_shared<Comms>(&cv, &mtx, &signaled);
+        std::shared_ptr<Comms> comms = std::make_shared<Comms>(&cv, &mtx, &signaled, &signals);
         std::unique_lock<std::mutex> lk(mtx);
-        for(auto ev: vEvents) {
-            if(ev) {
-                ev->attachWaiter(comms);
+        for(int i = 0; i != totalEvents; i++) {
+            if(vEvents[i]) {
+                vEvents[i]->attachWaiter({comms,i});
             }
         }
-        ret = cv.wait_for(lk, std::chrono::milliseconds(ulMilliseconds), [&](){
-                        if (bWaitAll) {
-                            return signaled == totalEvents;
-                        }
-                        else {
-                            return signaled > 0;
-                        }
-                    }
-                );
+        ret = cv.wait_for(
+            lk,
+            std::chrono::milliseconds(ulMilliseconds),
+            [&](){
+                    if (bWaitAll)
+                        return signaled == totalEvents;
+                    else
+                        return signaled > 0;
+                 }
+            );
     }
-    return ret ? WAIT_OK : WAIT_TIMEOUT;
-
+    if (ret) {
+        for(int i = 0; i != totalEvents; ++i) {
+            if (signals[i]) {
+                return WAIT_OBJECT_0 + i;
+            }
+        }
+    }
+    return WAIT_TIMEOUT;
 }
 
 int WaitForSingleObject(Event* ev, unsigned long duration_ms) {

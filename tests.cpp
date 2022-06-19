@@ -7,9 +7,11 @@
 
 void RunTests() {
     TestRunner tr;
-    RUN_TEST(tr, TestWeakMutex);
+    //RUN_TEST(tr, TestWeakMutex);
     //RUN_TEST(tr, TestWaitForSingleObject_1);
-    RUN_TEST(tr, TestWaitForSingleObject_2);
+    //RUN_TEST(tr, TestWaitForSingleObject_2);
+    RUN_TEST(tr, TestWaitForMultipleObjects_OneWaiterManyEvents);
+    RUN_TEST(tr, TestWaitForMultipleObjects_ManyWaitesManyEvents);
 }
 
 void TestWeakMutex() {
@@ -88,5 +90,68 @@ void TestWaitForSingleObject_2() {
             ++signaled_count;
     }
     std::cout << "Number of waiters OK: " << signaled_count << std::endl;
-    //std::cout << "Number of waiters for event: " << ev.get_waiters_num() << std::endl;
+}
+
+void TestWaitForMultipleObjects_OneWaiterManyEvents() {
+    const int number_events = 10;
+    int duration_ms = 1000;
+    int result = 134989;
+    std::vector<portable::Event*> events;
+    for(int i = 0; i != number_events; ++i) {
+        events.push_back(new portable::Event(false, false));
+    }
+    auto waiter = [&](int& wResult) {
+        wResult =  portable::WaitForMultipleObjects(events, true, duration_ms);
+    };
+
+    std::thread th(waiter, std::ref(result));
+
+    for(int i = 0; i!= number_events; ++i) {
+        this_thread::sleep_for(std::chrono::milliseconds(duration_ms/number_events/2));
+        events[i]->set();
+    }
+
+    th.join();
+
+    std::cout << "TestWaitForMultipleObjects_OneWaiterManyEvents result = " << result << std::endl;
+
+    for(int i = 0; i != number_events; ++i) {
+        delete events[i];
+    }
+}
+
+void TestWaitForMultipleObjects_ManyWaitesManyEvents() {
+    const int num_events = 10;
+    const int num_waiters = 10;
+    std::vector<int> result(num_waiters, 129380);
+    std::vector<portable::Event*> events;
+    std::vector<std::thread> waiters;
+    int duration_ms = 1000;
+    for(int i = 0; i != num_events; ++i) {
+        events.push_back(new portable::Event(false, false));
+    }
+    auto waiter = [&](int& wResult) {
+        wResult =  portable::WaitForMultipleObjects(events, true, duration_ms);
+    };
+    for (int i = 0; i != num_waiters; ++i)
+        waiters.emplace_back(waiter, std::ref(result[i]));
+
+    for (int j = 0; j!= num_waiters/2; ++j) {
+        this_thread::sleep_for(std::chrono::milliseconds(duration_ms/num_waiters));
+        for (int i = 0; i != num_events; ++i) {
+            events[i]->set();
+        }
+    }
+
+    for(int i = 0; i != num_waiters; ++i) {
+        waiters[i].join();
+    }
+
+    for (const auto res: result) {
+        std::cout << res << std::endl;
+    }
+
+    for(int i = 0; i != num_events; ++i) {
+        delete events[i];
+    }
 }
