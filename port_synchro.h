@@ -135,9 +135,9 @@ namespace portable {
 struct Comms {
     std::condition_variable* cv;
     std::mutex* mtx;
-    int* cntr;
+    std::atomic<int>* cntr;
     std::vector<bool>* signalsContainer;
-    Comms(std::condition_variable* _cv, std::mutex* _mtx, int* _cntr, std::vector<bool>* _sig_cr):
+    Comms(std::condition_variable* _cv, std::mutex* _mtx, std::atomic<int>* _cntr, std::vector<bool>* _sig_cr):
         cv(_cv),
         mtx(_mtx),
         cntr(_cntr),
@@ -175,7 +175,7 @@ public:
                 if (!swt)
                     continue;
                 std::lock_guard<std::mutex> wlk(*swt->mtx); // here we intentionally hold the waiter since it's not expired in previous line
-                ++(*swt->cntr);
+                (*swt->cntr)++;
                 (*swt->signalsContainer)[wt.idxToSignal] = true;
                 swt->cv->notify_one();
                 break;
@@ -214,7 +214,7 @@ constexpr unsigned long WAIT_TIMEOUT = 258L;
 
 int WaitForMultipleObjects(std::vector<Event*> vEvents, bool bWaitAll, unsigned long ulMilliseconds) {
     int totalEvents = vEvents.size();
-    int signaled = 0;
+    std::atomic<int> signaled = 0;
     for (int i = 0; i != totalEvents; i++) {
         if (vEvents[i] && vEvents[i]->isSignaled()) {
             ++signaled;
@@ -241,9 +241,9 @@ int WaitForMultipleObjects(std::vector<Event*> vEvents, bool bWaitAll, unsigned 
             std::chrono::milliseconds(ulMilliseconds),
             [&](){
                     if (bWaitAll)
-                        return signaled == totalEvents;
+                        return signaled.load() == totalEvents;
                     else
-                        return signaled > 0;
+                        return signaled.load() > 0;
                  }
             );
     }
