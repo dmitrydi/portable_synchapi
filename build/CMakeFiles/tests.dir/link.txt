@@ -1,0 +1,1 @@
+/usr/bin/c++ -Xlinker --dependency-file=CMakeFiles/tests.dir/link.d CMakeFiles/tests.dir/main.cpp.o CMakeFiles/tests.dir/tests.cpp.o CMakeFiles/tests.dir/test_runner.cpp.o -o tests
